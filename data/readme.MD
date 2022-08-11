@@ -30,5 +30,10 @@ Data under this folder is from [this paper](http://arxiv.org/abs/2007.07996)
 
 `data/covid19_infordemic/covid19_infodemic_english_data.tsv`: has 504 English tweets. The labels are **full answers** from the questions above.
 
+## New data source
 
+### new data from individual users
 
+`data/data_new/`: these are raw data pulled from twitter API
+
+`data/manual_label/`: include a few labels that we added manually 
