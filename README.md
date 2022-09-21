@@ -1,2 +1,2 @@
 # misinfo-NLP
-capstone project on misinformation 
+ensemble bert to identify misinformation in public health
