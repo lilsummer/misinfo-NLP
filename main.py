@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Query, HTTPException
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from typing import List, Tuple, Callable, TypeVar, Any, overload, Dict
@@ -16,7 +17,10 @@ from nlp4ifchallenge.models import bert, aggregation
 from transformers.utils import logging
 logging.set_verbosity("CRITICAL")
 
+from lime.lime_text import LimeTextExplainer
+
 from math import ceil
+import numpy as np
 
 
 MODELS_DIR = 'checkpoints/'
@@ -25,8 +29,8 @@ app = FastAPI()
 class TweetIn(BaseModel):
     tweets: List[str]
 
-class TweetOut(BaseModel):
-    forecast: dict
+# class TweetOut(BaseModel):
+#     forecast: dict
 
 device = "cpu"
 batch_size = 16
@@ -42,6 +46,9 @@ MODELS = {'vinai-covid': None,
           'cardiffnlp-irony': None,
           'cardiffnlp-offensive': None,
           'cardiffnlp-emotion': None}
+
+CHOSEN_MODEL = 'cardiffnlp-tweet'
+
 
 for name in MODELS:
     model = bert.make_model(name=name, ignore_nan=ignore_nan)
@@ -69,33 +76,60 @@ def get_scores(model_names: List[str], datasets: List[List[types.Tweet]], batch_
             this_model_outs.append(cat(this_dataset_outs, dim=0))
         outs.append(this_model_outs)
         empty_cache()
+    
     return [stack(x, dim=1) for x in zip(*outs)]
 
 
-@app.post("/predict", response_model=TweetOut, status_code=200)
-def get_prediction(tweets_in: TweetIn):
-
-    device = "cpu"
-    tweets = tweets_in.tweets
-
+def get_scores_all_models(tweets):
     ins = []
     for i, t in enumerate(tweets):
         ins.append(types.Tweet(i, t))
-    ins = [types.Tweet(0, tweets)]
 
     predictions = {}
     for name in MODELS:
         model = MODELS[name]
-        predictions[name] = model.predict(ins)
+        predictions[name] = model.predict_scores(ins).cpu().data.numpy()
 
     [test_inputs] = get_scores(model_names=MODELS.keys(), datasets=[ins],
                     batch_size=batch_size, device=device, model_dir=MODELS_DIR, data_tag="english")
     aggregator = train_aggregator.MetaClassifier(num_models=8, hidden_size=hidden_size, dropout=dropout).to(device)
     aggregator.load_state_dict(torch.load(MODELS_DIR+'/aggregator-english/model.p', map_location=torch.device(device)))
-    predictions['aggregator'] = aggregator.predict(test_inputs.to(device))
+    predictions['aggregator'] = aggregator.forward(test_inputs.to(device)).sigmoid().cpu().data.numpy()
 
-    if not predictions:
+    return predictions
+
+
+def get_scores_for_explainer(tweets):
+    pred = get_scores_all_models(tweets)[CHOSEN_MODEL]
+    r = []
+    for i in pred:
+        temp = i[1]
+        r.append(np.array([1-temp-0.4, temp+0.4])) 
+
+    return np.array(r)
+
+
+def explain_label(arr):
+    explainer = LimeTextExplainer(class_names=['no', 'yes'], random_state=2)
+    outs = []
+
+    for tweet in arr:
+        exp = explainer.explain_instance(
+            tweet,
+            get_scores_for_explainer,
+            num_features=10,
+            num_samples=10)
+        outs.append(exp.as_html(text=tweet))
+
+    return outs
+
+
+@app.post("/predict", status_code=200)
+def get_prediction(tweets_in: TweetIn):
+    tweets = tweets_in.tweets
+
+    html_response = explain_label(tweets)
+    if not html_response:
         raise HTTPException(status_code=400, detail="Model not found.")
 
-    print(predictions)
-    return predictions
+    return HTMLResponse(" ".join(html_response))
